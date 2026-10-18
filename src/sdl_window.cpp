@@ -209,6 +209,10 @@ void WindowSDL::WaitEvent() {
         return;
     }
 
+    if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+        Input::ReleaseKeyboardMouseInputs();
+    }
+
     if (Libraries::Mouse::PushSDLEvent(event) || Libraries::Keyboard::PushSDLEvent(event)) {
         return;
     }
