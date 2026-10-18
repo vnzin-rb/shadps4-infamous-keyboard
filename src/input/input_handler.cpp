@@ -357,6 +357,8 @@ std::optional<int> parseInt(const std::string& s) {
 };
 
 void ParseInputConfig(const std::string game_id = "") {
+    // Release old keyboard outputs before replacing their bindings (e.g. F8 reload).
+    ReleaseKeyboardMouseInputs();
     std::string game_id_or_default =
         EmulatorSettings.IsUseUnifiedInputConfig() ? "default" : game_id;
     const auto config_file = GetInputConfigFile(game_id_or_default);
@@ -513,7 +515,7 @@ void ParseInputConfig(const std::string game_id = "") {
                     {"rightjoystick", rightjoystick_deadzone},
                     {"l2", lefttrigger_deadzone},
                     {"r2", righttrigger_deadzone},
-                };
+            };
             output_gamepad_id = output_gamepad_id == -1 ? 1 : output_gamepad_id;
 
             if (auto it = deadzone_map.find(device); it != deadzone_map.end()) {
@@ -739,17 +741,32 @@ void ControllerOutput::FinalizeUpdate(u8 gamepad_index) {
         UNREACHABLE();
     if (button != SDL_GAMEPAD_BUTTON_INVALID) {
         switch (button) {
+        case TOUCHPAD_SWIPE_DOWN:
+            controller->SetVirtualTouchpadSwipeDown(new_button_state);
+            break;
+        case TOUCHPAD_SWIPE_UP:
+            controller->SetVirtualTouchpadSwipe(VirtualTouchpadSwipe::Up, new_button_state);
+            break;
+        case TOUCHPAD_SWIPE_LEFT:
+            controller->SetVirtualTouchpadSwipe(VirtualTouchpadSwipe::Left, new_button_state);
+            break;
+        case TOUCHPAD_SWIPE_RIGHT:
+            controller->SetVirtualTouchpadSwipe(VirtualTouchpadSwipe::Right, new_button_state);
+            break;
+        case MOTION_SIDEWAYS:
+            controller->SetVirtualMotionButton(VirtualMotionButton::Sideways, new_button_state);
+            break;
+        case MOTION_SHAKE:
+            controller->SetVirtualMotionButton(VirtualMotionButton::Shake, new_button_state);
+            break;
         case SDL_GAMEPAD_BUTTON_TOUCHPAD_LEFT:
-            controller->SetTouchpadState(0, new_button_state, 0.25f, 0.5f);
-            controller->Button(SDLGamepadToOrbisButton(button), new_button_state);
+            controller->SetVirtualTouchpadButton(VirtualTouchpadButton::Left, new_button_state);
             break;
         case SDL_GAMEPAD_BUTTON_TOUCHPAD_CENTER:
-            controller->SetTouchpadState(0, new_button_state, 0.50f, 0.5f);
-            controller->Button(SDLGamepadToOrbisButton(button), new_button_state);
+            controller->SetVirtualTouchpadButton(VirtualTouchpadButton::Center, new_button_state);
             break;
         case SDL_GAMEPAD_BUTTON_TOUCHPAD_RIGHT:
-            controller->SetTouchpadState(0, new_button_state, 0.75f, 0.5f);
-            controller->Button(SDLGamepadToOrbisButton(button), new_button_state);
+            controller->SetVirtualTouchpadButton(VirtualTouchpadButton::Right, new_button_state);
             break;
         case LEFTJOYSTICK_HALFMODE:
             leftjoystick_halfmode = new_button_state;
@@ -1023,6 +1040,13 @@ void ActivateOutputsFromInputs() {
             it.FinalizeUpdate(i);
         }
     }
+}
+
+void ReleaseKeyboardMouseInputs() {
+    pressed_keys.remove_if([](const auto& entry) {
+        return entry.first.input.type == InputType::KeyboardMouse;
+    });
+    ActivateOutputsFromInputs();
 }
 
 } // namespace Input

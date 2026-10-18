@@ -35,6 +35,10 @@ struct TouchpadEntry {
     u16 y{};
 };
 
+enum class VirtualTouchpadButton { Left, Center, Right };
+enum class VirtualTouchpadSwipe { Up, Down, Left, Right };
+enum class VirtualMotionButton { Sideways, Shake };
+
 struct Colour {
     u8 r, g, b;
 };
@@ -97,6 +101,8 @@ public:
     void Axis(Input::Axis axis, int value, bool smooth = true);
     void UpdateGyro(const float gyro[3]);
     void UpdateAcceleration(const float acceleration[3]);
+    void UpdateMotion(const float gyro[3], const float acceleration[3]);
+    void SetVirtualMotionButton(VirtualMotionButton button, bool is_pressed);
     void PollState();
     void ResetOrientation();
     void SetLightBarRGB(u8 const r, u8 const g, u8 const b);
@@ -105,6 +111,9 @@ public:
     void PollLightColour();
     bool SetVibration(u8 smallMotor, u8 largeMotor);
     void SetTouchpadState(int touchIndex, bool touchDown, float x, float y);
+    void SetVirtualTouchpadButton(VirtualTouchpadButton button, bool is_pressed);
+    void SetVirtualTouchpadSwipeDown(bool is_pressed);
+    void SetVirtualTouchpadSwipe(VirtualTouchpadSwipe direction, bool is_pressed);
 
     float gyro_buf[3] = {0.0f, 0.0f, 0.0f}, accel_buf[3] = {0.0f, 9.81f, 0.0f};
     s32 user_id = Libraries::UserService::ORBIS_USER_SERVICE_USER_ID_INVALID;
@@ -114,8 +123,20 @@ private:
     // m_state_mutex must be held by the caller.
     void PushStateLocked(u64 timestamp = 0);
     void UpdateOrientationLocked(u64 timestamp);
+    void ApplyVirtualMotionLocked(u64 timestamp);
+    void UpdateTouchpadStateLocked(int touch_index, bool touch_down, float x, float y,
+                                   u64 timestamp);
 
     u8 m_next_touch_id{1};
+    std::array<bool, 3> m_virtual_touchpad_buttons{};
+    bool m_touchpad_button_pressed{};
+    bool m_virtual_swipe_active{};
+    std::array<bool, 4> m_virtual_swipe_buttons{};
+    VirtualTouchpadSwipe m_swipe_direction{VirtualTouchpadSwipe::Down};
+    u64 m_swipe_start_timestamp{};
+    std::array<bool, 2> m_virtual_motion_buttons{};
+    u64 m_shake_start_timestamp{};
+    Libraries::Pad::OrbisFQuaternion m_orientation_before_sideways{0, 0, 0, 1};
     u64 m_touch_down_timestamp{};
     u64 m_last_orientation_update{};
     Colour colour;

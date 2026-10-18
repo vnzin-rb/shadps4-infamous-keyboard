@@ -50,6 +50,12 @@
 
 #define KEY_TOGGLE 0x00200000
 #define MOUSE_GYRO_ROLL_MODE 0x00400000
+#define MOTION_SIDEWAYS 0x00800000
+#define MOTION_SHAKE 0x01000000
+#define TOUCHPAD_SWIPE_DOWN 0x02000000
+#define TOUCHPAD_SWIPE_UP 0x04000000
+#define TOUCHPAD_SWIPE_LEFT 0x08000000
+#define TOUCHPAD_SWIPE_RIGHT 0x10000000
 
 #define HOTKEY_FULLSCREEN 0xf0000001
 #define HOTKEY_PAUSE 0xf0000002
@@ -140,6 +146,10 @@ const std::map<std::string, u32> string_to_cbutton_map = {
     {"touchpad_left", SDL_GAMEPAD_BUTTON_TOUCHPAD_LEFT},
     {"touchpad_center", SDL_GAMEPAD_BUTTON_TOUCHPAD_CENTER},
     {"touchpad_right", SDL_GAMEPAD_BUTTON_TOUCHPAD_RIGHT},
+    {"touchpad_swipe_down", TOUCHPAD_SWIPE_DOWN},
+    {"touchpad_swipe_up", TOUCHPAD_SWIPE_UP},
+    {"touchpad_swipe_left", TOUCHPAD_SWIPE_LEFT},
+    {"touchpad_swipe_right", TOUCHPAD_SWIPE_RIGHT},
     {"leftjoystick_halfmode", LEFTJOYSTICK_HALFMODE},
     {"rightjoystick_halfmode", RIGHTJOYSTICK_HALFMODE},
 
@@ -151,6 +161,8 @@ const std::map<std::string, u32> string_to_cbutton_map = {
     {"rpaddle_high", SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1},
     {"rpaddle_low", SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2},
     {"mouse_gyro_roll_mode", MOUSE_GYRO_ROLL_MODE},
+    {"motion_sideways", MOTION_SIDEWAYS},
+    {"motion_shake", MOTION_SHAKE},
     {"qam", SDL_GAMEPAD_BUTTON_MISC1},
     {"r4", SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1},
     {"l4", SDL_GAMEPAD_BUTTON_LEFT_PADDLE1},
@@ -540,13 +552,15 @@ public:
 
 class ControllerAllOutputs {
 public:
-    static constexpr u64 output_count = 43;
+    static constexpr u64 output_count = 49;
     std::array<ControllerOutput, output_count> data = {
         // Important: these have to be the first, or else they will update in the wrong order
         ControllerOutput(LEFTJOYSTICK_HALFMODE),
         ControllerOutput(RIGHTJOYSTICK_HALFMODE),
         ControllerOutput(KEY_TOGGLE),
         ControllerOutput(MOUSE_GYRO_ROLL_MODE),
+        ControllerOutput(MOTION_SIDEWAYS),
+        ControllerOutput(MOTION_SHAKE),
 
         // Button mappings
         ControllerOutput(SDL_GAMEPAD_BUTTON_NORTH),           // Triangle
@@ -561,6 +575,10 @@ public:
         ControllerOutput(SDL_GAMEPAD_BUTTON_TOUCHPAD_LEFT),   // TouchPad
         ControllerOutput(SDL_GAMEPAD_BUTTON_TOUCHPAD_CENTER), // TouchPad
         ControllerOutput(SDL_GAMEPAD_BUTTON_TOUCHPAD_RIGHT),  // TouchPad
+        ControllerOutput(TOUCHPAD_SWIPE_DOWN),                // Hold for a downward swipe
+        ControllerOutput(TOUCHPAD_SWIPE_UP),
+        ControllerOutput(TOUCHPAD_SWIPE_LEFT),
+        ControllerOutput(TOUCHPAD_SWIPE_RIGHT),
         ControllerOutput(SDL_GAMEPAD_BUTTON_DPAD_UP),         // Up
         ControllerOutput(SDL_GAMEPAD_BUTTON_DPAD_DOWN),       // Down
         ControllerOutput(SDL_GAMEPAD_BUTTON_DPAD_LEFT),       // Left
@@ -610,5 +628,6 @@ public:
 bool UpdatePressedKeys(InputEvent event);
 
 void ActivateOutputsFromInputs();
+void ReleaseKeyboardMouseInputs();
 
 } // namespace Input

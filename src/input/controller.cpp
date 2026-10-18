@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <numbers>
 #include <unordered_set>
 #include <utility>
 
@@ -96,6 +97,12 @@ int GameController::ReadStates(State* states, int states_num) {
 
 void GameController::Button(OrbisPadButtonDataOffset button, bool is_pressed) {
     std::lock_guard lock{m_state_mutex};
+    if (button == OrbisPadButtonDataOffset::TouchPad) {
+        m_touchpad_button_pressed = is_pressed;
+        is_pressed |=
+            std::ranges::any_of(m_virtual_touchpad_buttons, [](bool down) { return down; });
+        is_pressed |= m_virtual_swipe_active;
+    }
     m_state.OnButton(button, is_pressed);
     PushStateLocked();
 }
@@ -117,6 +124,58 @@ void GameController::UpdateAcceleration(const float acceleration[3]) {
     std::memcpy(accel_buf, acceleration, sizeof(accel_buf));
 }
 
+void GameController::UpdateMotion(const float gyro[3], const float acceleration[3]) {
+    std::lock_guard lock{m_state_mutex};
+    std::memcpy(gyro_buf, gyro, sizeof(gyro_buf));
+    std::memcpy(accel_buf, acceleration, sizeof(accel_buf));
+}
+
+void GameController::SetVirtualMotionButton(VirtualMotionButton button, bool is_pressed) {
+    const auto index = std::to_underlying(button);
+    if (index < 0 || index >= m_virtual_motion_buttons.size()) {
+        return;
+    }
+    std::lock_guard lock{m_state_mutex};
+    if (m_virtual_motion_buttons[index] == is_pressed) {
+        return; // Key repeat must not restart the shake or recenter the aim.
+    }
+    const u64 timestamp = Libraries::Kernel::sceKernelGetProcessTime();
+    if (button == VirtualMotionButton::Sideways) {
+        if (is_pressed) {
+            m_orientation_before_sideways = m_state.orientation;
+            // A quarter turn around the controller's forward axis.
+            constexpr float half_sqrt_two = std::numbers::sqrt2_v<float> / 2;
+            m_state.orientation = {0, 0, half_sqrt_two, half_sqrt_two};
+        } else {
+            m_state.orientation = m_orientation_before_sideways;
+        }
+        m_last_orientation_update = timestamp;
+    } else {
+        m_shake_start_timestamp = is_pressed ? timestamp : 0;
+    }
+    m_virtual_motion_buttons[index] = is_pressed;
+    PushStateLocked(timestamp);
+}
+
+void GameController::ApplyVirtualMotionLocked(u64 timestamp) {
+    if (m_virtual_motion_buttons[0]) {
+        // Rotate world gravity into controller space, keeping acceleration consistent
+        // with the sideways quaternion and subsequent mouse gyro aiming.
+        const auto& q = m_state.orientation;
+        m_state.acceleration = {9.81f * 2 * (q.x * q.y + q.w * q.z),
+                                9.81f * (1 - 2 * (q.x * q.x + q.z * q.z)),
+                                9.81f * 2 * (q.y * q.z - q.w * q.x)};
+    }
+    if (m_virtual_motion_buttons[1]) {
+        // Translational shaking, in m/s^2 (SDL sensor units). Use elapsed time,
+        // not poll count, so input events and guest report reads cannot speed it up.
+        const u64 elapsed = timestamp >= m_shake_start_timestamp
+                                ? timestamp - m_shake_start_timestamp : 0;
+        const float phase = static_cast<float>(elapsed % 200'000) / 200'000;
+        m_state.acceleration.x += 30.0f * std::sin(2 * std::numbers::pi_v<float> * phase);
+    }
+}
+
 void GameController::PollState() {
     std::lock_guard lock{m_state_mutex};
     PushStateLocked();
@@ -125,6 +184,11 @@ void GameController::PollState() {
 void GameController::ResetOrientation() {
     std::lock_guard lock{m_state_mutex};
     m_state.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+    m_orientation_before_sideways = m_state.orientation;
+    if (m_virtual_motion_buttons[0]) {
+        constexpr float half_sqrt_two = std::numbers::sqrt2_v<float> / 2;
+        m_state.orientation = {0, 0, half_sqrt_two, half_sqrt_two};
+    }
     m_last_orientation_update = 0;
     PushStateLocked();
 }
@@ -135,10 +199,89 @@ void GameController::SetTouchpadState(int touch_index, bool touch_down, float x,
     }
 
     std::lock_guard lock{m_state_mutex};
+    // The keyboard gesture owns finger zero until release. Mouse polling must not lift it.
+    if (touch_index == 0 && m_virtual_swipe_active) {
+        return;
+    }
     const u64 timestamp = Libraries::Kernel::sceKernelGetProcessTime();
+    UpdateTouchpadStateLocked(touch_index, touch_down, x, y, timestamp);
+    PushStateLocked(timestamp);
+}
+
+void GameController::SetVirtualTouchpadButton(VirtualTouchpadButton button, bool is_pressed) {
+    const auto index = std::to_underlying(button);
+    if (index < 0 || index >= m_virtual_touchpad_buttons.size()) {
+        return;
+    }
+
+    std::lock_guard lock{m_state_mutex};
+    m_virtual_touchpad_buttons[index] = is_pressed;
+    const u64 timestamp = Libraries::Kernel::sceKernelGetProcessTime();
+    // Left and center share the first finger; left takes priority while both are held.
+    // Right always owns the second finger, including when it is the only one held.
+    if (button == VirtualTouchpadButton::Right) {
+        UpdateTouchpadStateLocked(1, is_pressed, 0.75f, 0.5f, timestamp);
+    } else if (!m_virtual_swipe_active) {
+        const bool left = m_virtual_touchpad_buttons[0];
+        const bool center = m_virtual_touchpad_buttons[1];
+        UpdateTouchpadStateLocked(0, left || center, left ? 0.25f : 0.5f, 0.5f, timestamp);
+    }
+    const bool virtual_click =
+        std::ranges::any_of(m_virtual_touchpad_buttons, [](bool down) { return down; });
+    m_state.OnButton(OrbisPadButtonDataOffset::TouchPad,
+                     m_touchpad_button_pressed || virtual_click || m_virtual_swipe_active);
+    // Publish contact and click together, so readers cannot observe a partial update.
+    PushStateLocked(timestamp);
+}
+
+void GameController::SetVirtualTouchpadSwipeDown(bool is_pressed) {
+    SetVirtualTouchpadSwipe(VirtualTouchpadSwipe::Down, is_pressed);
+}
+
+void GameController::SetVirtualTouchpadSwipe(VirtualTouchpadSwipe direction, bool is_pressed) {
+    const auto index = std::to_underlying(direction);
+    if (index < 0 || index >= m_virtual_swipe_buttons.size()) {
+        return;
+    }
+    std::lock_guard lock{m_state_mutex};
+    if (m_virtual_swipe_buttons[index] == is_pressed) {
+        return; // Key repeat must not restart the gesture or change its contact ID.
+    }
+    m_virtual_swipe_buttons[index] = is_pressed;
+    if (m_virtual_swipe_active && m_virtual_swipe_buttons[std::to_underlying(m_swipe_direction)]) {
+        return; // A second direction cannot interrupt a finger that is still held.
+    }
+    const auto held = std::ranges::find(m_virtual_swipe_buttons, true);
+    const bool active = held != m_virtual_swipe_buttons.end();
+    if (active) {
+        m_swipe_direction = static_cast<VirtualTouchpadSwipe>(held - m_virtual_swipe_buttons.begin());
+    }
+    const u64 timestamp = Libraries::Kernel::sceKernelGetProcessTime();
+    m_virtual_swipe_active = active;
+    m_swipe_start_timestamp = active ? timestamp : 0;
+    // Start each gesture with a fresh contact, independently of a preceding fixed touch.
+    UpdateTouchpadStateLocked(0, false, 0.5f, is_pressed ? 0.1f : 0.9f, timestamp);
+    if (!active && (m_virtual_touchpad_buttons[0] || m_virtual_touchpad_buttons[1])) {
+        UpdateTouchpadStateLocked(0, true, m_virtual_touchpad_buttons[0] ? 0.25f : 0.5f,
+                                 0.5f, timestamp);
+    }
+    const bool virtual_click =
+        std::ranges::any_of(m_virtual_touchpad_buttons, [](bool down) { return down; });
+    m_state.OnButton(OrbisPadButtonDataOffset::TouchPad,
+                     m_touchpad_button_pressed || virtual_click || m_virtual_swipe_active);
+    PushStateLocked(timestamp);
+}
+
+void GameController::UpdateTouchpadStateLocked(int touch_index, bool touch_down, float x, float y,
+                                               u64 timestamp) {
     const bool was_pressed = m_state.touchpad[0].state || m_state.touchpad[1].state;
     auto& touch = m_state.touchpad[touch_index];
     if (touch_down && !touch.state) {
+        // A long-held finger must keep its ID unique even after the 7-bit counter wraps.
+        const auto& other = m_state.touchpad[1 - touch_index];
+        if (other.state && m_next_touch_id == other.ID) {
+            m_next_touch_id = m_next_touch_id == 127 ? 1 : m_next_touch_id + 1;
+        }
         touch.ID = m_next_touch_id;
         m_next_touch_id = m_next_touch_id == 127 ? 1 : m_next_touch_id + 1;
     }
@@ -149,7 +292,6 @@ void GameController::SetTouchpadState(int touch_index, bool touch_down, float x,
     } else if (was_pressed && !is_pressed) {
         m_touch_down_timestamp = 0;
     }
-    PushStateLocked(timestamp);
 }
 
 void GameController::ConnectController(SDL_Gamepad* pad) {
@@ -182,6 +324,14 @@ void GameController::DisconnectController() {
     std::fill(accel_buf, accel_buf + 3, 0.0f);
     accel_buf[1] = 9.81f;
     m_next_touch_id = 1;
+    m_virtual_touchpad_buttons = {};
+    m_touchpad_button_pressed = false;
+    m_virtual_swipe_active = false;
+    m_virtual_swipe_buttons = {};
+    m_swipe_start_timestamp = 0;
+    m_virtual_motion_buttons = {};
+    m_shake_start_timestamp = 0;
+    m_orientation_before_sideways = {0, 0, 0, 1};
     m_touch_down_timestamp = 0;
     m_state.connected = false;
     m_last_orientation_update = 0;
@@ -209,6 +359,21 @@ void GameController::PushStateLocked(u64 timestamp) {
     m_state.OnGyro(gyro_buf);
     m_state.OnAccel(accel_buf);
     UpdateOrientationLocked(timestamp);
+    ApplyVirtualMotionLocked(timestamp);
+    if (m_virtual_swipe_active) {
+        // One continuous stroke in 300 ms, then hold the endpoint until key release.
+        const u64 elapsed = timestamp >= m_swipe_start_timestamp
+                                ? timestamp - m_swipe_start_timestamp : 0;
+        const float progress = std::min(static_cast<float>(elapsed) / 300'000.0f, 1.0f);
+        float x = 0.5f, y = 0.5f;
+        switch (m_swipe_direction) {
+        case VirtualTouchpadSwipe::Up: y = 0.9f - 0.8f * progress; break;
+        case VirtualTouchpadSwipe::Down: y = 0.1f + 0.8f * progress; break;
+        case VirtualTouchpadSwipe::Left: x = 0.9f - 0.8f * progress; break;
+        case VirtualTouchpadSwipe::Right: x = 0.1f + 0.8f * progress; break;
+        }
+        UpdateTouchpadStateLocked(0, true, x, y, timestamp);
+    }
     m_state.time = timestamp;
     m_state.touch_time_since_held_down =
         m_touch_down_timestamp == 0 ? 0 : timestamp - m_touch_down_timestamp;

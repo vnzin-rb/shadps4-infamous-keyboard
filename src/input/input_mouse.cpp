@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <cmath>
+#include <list>
+#include <mutex>
 
 #include "common/assert.h"
 #include "common/types.h"
@@ -9,8 +12,7 @@
 #include "input/input_handler.h"
 #include "input_mouse.h"
 
-#include <common/singleton.h>
-#include <emulator.h>
+#include "sdl_window.h"
 #include "SDL3/SDL.h"
 
 extern Frontend::WindowSDL* g_window;
@@ -24,10 +26,20 @@ float mouse_deadzone_offset = 0.5, mouse_speed = 1, mouse_speed_offset = 0.1250;
 bool mouse_gyro_roll_mode = false;
 Uint32 mouse_polling_id = 0;
 MouseMode mouse_mode = MouseMode::Off;
+// Serialize timer samples with mode changes so an in-flight sample cannot undo F6 release.
+std::mutex mouse_polling_mutex;
 
 // Switches mouse to a set mode or turns mouse emulation off if it was already in that mode.
 // Returns whether the mode is turned on.
 bool ToggleMouseModeTo(MouseMode m) {
+    std::lock_guard lock{mouse_polling_mutex};
+    if (mouse_mode == MouseMode::Gyro) {
+        // Otherwise the final nonzero mouse sample keeps rotating after F6 is off.
+        constexpr float rest_gyro[3] = {0, 0, 0};
+        constexpr float rest_accel[3] = {0, 9.81f, 0};
+        ControllerOutput::controllers[0]->UpdateMotion(rest_gyro, rest_accel);
+        ControllerOutput::controllers[0]->PollState();
+    }
     if (mouse_mode == m) {
         mouse_mode = MouseMode::Off;
     } else {
@@ -37,16 +49,19 @@ bool ToggleMouseModeTo(MouseMode m) {
 }
 
 void SetMouseToJoystick(int joystick) {
+    std::lock_guard lock{mouse_polling_mutex};
     mouse_joystick_binding = joystick;
 }
 
 void SetMouseParams(float mdo, float ms, float mso) {
+    std::lock_guard lock{mouse_polling_mutex};
     mouse_deadzone_offset = mdo;
     mouse_speed = ms;
     mouse_speed_offset = mso;
 }
 
 void SetMouseGyroRollMode(bool mode) {
+    std::lock_guard lock{mouse_polling_mutex};
     mouse_gyro_roll_mode = mode;
 }
 
@@ -89,13 +104,12 @@ constexpr float constant_down_accel[3] = {0.0f, 9.81f, 0.0f};
 void EmulateGyro(GameController* controller, u32 interval) {
     float d_x = 0, d_y = 0;
     SDL_GetRelativeMouseState(&d_x, &d_y);
-    controller->UpdateAcceleration(constant_down_accel);
     float gyro_from_mouse[3] = {-d_y / 100, -d_x / 100, 0.0f};
     if (mouse_gyro_roll_mode) {
         gyro_from_mouse[1] = 0.0f;
         gyro_from_mouse[2] = -d_x / 100;
     }
-    controller->UpdateGyro(gyro_from_mouse);
+    controller->UpdateMotion(gyro_from_mouse, constant_down_accel);
 }
 
 void EmulateTouchpad(GameController* controller, u32 interval) {
@@ -109,6 +123,7 @@ void EmulateTouchpad(GameController* controller, u32 interval) {
 }
 
 void ApplyMouseInputBlockers() {
+    std::lock_guard lock{mouse_polling_mutex};
     switch (mouse_mode) {
     case MouseMode::Touchpad:
         for (auto& k : pressed_keys) {
@@ -124,6 +139,7 @@ void ApplyMouseInputBlockers() {
 }
 
 Uint32 MousePolling(void* param, Uint32 id, Uint32 interval) {
+    std::lock_guard lock{mouse_polling_mutex};
     auto* controller = (GameController*)param;
     switch (mouse_mode) {
     case MouseMode::Joystick:
