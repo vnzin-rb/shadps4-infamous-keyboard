@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 # Find or download Google Test
+add_subdirectory(touchpad)
+
 include(FetchContent)
     FetchContent_Declare(
     googletest
